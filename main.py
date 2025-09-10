@@ -49,5 +49,5 @@ def sync_files():
 if __name__ == "__main__":
     dump_file = dump_remote_mysql()
     restore_local_mysql(dump_file)
-    sync_files()
+    # sync_files()
     print("Sync complete. Local machine is now a replica of the server.")

@@ -1,20 +1,25 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Configuration for server and local paths
 
 REMOTE_DB = {
-    'host': 'your_server_host',
-    'user': 'your_db_user',
-    'password': 'your_db_password',
-    'database': 'your_db_name'
+    'host': os.getenv('REMOTE_DB_HOST'),
+    'user': os.getenv('REMOTE_DB_USER'),
+    'password': os.getenv('REMOTE_DB_PASSWORD'),
+    'database': os.getenv('REMOTE_DB_NAME')
 }
 
 LOCAL_DB = {
-    'host': 'localhost',
-    'user': 'your_local_user',
-    'password': 'your_local_password',
-    'database': 'your_local_db_name'
+    'host': os.getenv('LOCAL_DB_HOST', 'localhost'),
+    'user': os.getenv('LOCAL_DB_USER'),
+    'password': os.getenv('LOCAL_DB_PASSWORD'),
+    'database': os.getenv('LOCAL_DB_NAME')
 }
 
-REMOTE_FILES_PATH = '/path/to/remote/files'
-LOCAL_FILES_PATH = '/path/to/local/files'
+REMOTE_FILES_PATH = os.getenv('REMOTE_FILES_PATH')
+LOCAL_FILES_PATH = os.getenv('LOCAL_FILES_PATH')
 
 # Add any other configuration as needed
