@@ -22,4 +22,10 @@ LOCAL_DB = {
 REMOTE_FILES_PATH = os.getenv('REMOTE_FILES_PATH')
 LOCAL_FILES_PATH = os.getenv('LOCAL_FILES_PATH')
 
+REMOTE_SSH = {
+    'host': os.getenv('REMOTE_SSH_HOST'),
+    'user': os.getenv('REMOTE_SSH_USER'),
+    'password': os.getenv('REMOTE_SSH_PASSWORD')
+}
+
 # Add any other configuration as needed

@@ -3,13 +3,14 @@ import subprocess
 import paramiko
 from datetime import datetime
 from config import REMOTE_DB, LOCAL_DB, REMOTE_FILES_PATH, LOCAL_FILES_PATH
+from config import REMOTE_SSH
 
 # --- MySQL Dump from Remote Server ---
 def dump_remote_mysql():
     dump_file = f"remote_db_backup_{datetime.now().strftime('%Y%m%d')}.sql"
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(REMOTE_DB['host'], username=REMOTE_DB['user'], password=REMOTE_DB['password'])
+    ssh.connect(REMOTE_SSH['host'], username=REMOTE_SSH['user'], password=REMOTE_SSH['password'])
     dump_cmd = f"mysqldump -u{REMOTE_DB['user']} -p'{REMOTE_DB['password']}' {REMOTE_DB['database']} > /tmp/{dump_file}"
     ssh.exec_command(dump_cmd)
     sftp = ssh.open_sftp()
@@ -35,7 +36,7 @@ def restore_local_mysql(dump_file):
 def sync_files():
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(REMOTE_DB['host'], username=REMOTE_DB['user'], password=REMOTE_DB['password'])
+    ssh.connect(REMOTE_SSH['host'], username=REMOTE_SSH['user'], password=REMOTE_SSH['password'])
     sftp = ssh.open_sftp()
     if not os.path.exists(LOCAL_FILES_PATH):
         os.makedirs(LOCAL_FILES_PATH)
