@@ -6,6 +6,7 @@ This project automates the daily copying of a remote MySQL database (via direct 
 ## Features
 - Daily backup of remote MySQL database to local machine using mysqldump
 - FTP file retrieval (supports optional extension filtering)
+ - Optional recursive FTP directory traversal (enable with FTP_RECURSIVE=true)
 - Logs progress and errors
 - Ensures local machine mirrors the server's data & file assets
 
@@ -40,8 +41,12 @@ Key variables (see `.env.example` for full list):
 - REMOTE_FTP_HOST / REMOTE_FTP_USER / REMOTE_FTP_PASSWORD / REMOTE_FTP_PASSIVE
 - REMOTE_FILES_PATH / LOCAL_FILES_PATH
 - FILTER_EXTENSIONS
+ - FTP_RECURSIVE
+ - FTP_RECENT_ONLY / FTP_RECENT_WINDOW_HOURS
 
-If FILTER_EXTENSIONS is set (e.g. `.jpg,.png`), only those files are downloaded.
+If FILTER_EXTENSIONS is set (e.g. `.jpg,.png`), only those files are downloaded. Set `FTP_RECURSIVE=true` to traverse subdirectories; otherwise only the top-level files are downloaded and folders are skipped.
+
+Recent-only mode: set `FTP_RECENT_ONLY=true` and optionally `FTP_RECENT_WINDOW_HOURS=24` (default 24) to download only files whose FTP MDTM timestamp is within the last N hours. If MDTM isn't supported for a file, it is downloaded to avoid missing updates.
 
 ---
 

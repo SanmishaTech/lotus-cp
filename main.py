@@ -10,6 +10,9 @@ from config import (
     LOCAL_FILES_PATH,
     REMOTE_FTP,
     FILTER_EXTENSIONS,
+    RECURSIVE_FTP,
+    RECENT_ONLY,
+    RECENT_WINDOW_HOURS,
 )
 
 logging.basicConfig(
@@ -73,6 +76,60 @@ def sync_files():
             return True
         return any(name.lower().endswith(ext.lower()) for ext in FILTER_EXTENSIONS)
 
+    def is_directory(ftp_conn: FTP, name: str) -> bool:
+        current = ftp_conn.pwd()
+        try:
+            ftp_conn.cwd(name)
+            ftp_conn.cwd(current)
+            return True
+        except Exception:
+            return False
+
+    def get_mdtm_datetime(ftp_conn: FTP, name: str):
+        """Return UTC datetime for file via MDTM or None if unsupported."""
+        try:
+            resp = ftp_conn.sendcmd(f"MDTM {name}")  # format: '213 YYYYMMDDHHMMSS'
+            if not resp.startswith('213 '):
+                return None
+            ts = resp.split()[1].strip()
+            return datetime.strptime(ts, '%Y%m%d%H%M%S')
+        except Exception:
+            return None
+
+    recent_cutoff = datetime.utcnow() if not RECENT_ONLY else datetime.utcnow()
+
+    def is_recent(ftp_conn: FTP, name: str) -> bool:
+        if not RECENT_ONLY:
+            return True
+        mdtm = get_mdtm_datetime(ftp_conn, name)
+        if mdtm is None:
+            # If MDTM unsupported, default to downloading to avoid missing updates
+            return True
+        delta_hours = (recent_cutoff - mdtm).total_seconds() / 3600.0
+        return delta_hours <= RECENT_WINDOW_HOURS
+
+    def download_dir(ftp_conn: FTP, remote_dir: str, local_dir: str):
+        ftp_conn.cwd(remote_dir)
+        os.makedirs(local_dir, exist_ok=True)
+        for entry in ftp_conn.nlst():
+            if entry in ('.', '..'):
+                continue
+            if is_directory(ftp_conn, entry):
+                if RECURSIVE_FTP:
+                    download_dir(ftp_conn, entry, os.path.join(local_dir, entry))
+                else:
+                    logging.debug('Skipping directory (recursion disabled): %s/%s', remote_dir, entry)
+            else:
+                if not should_download(entry):
+                    continue
+                if not is_recent(ftp_conn, entry):
+                    continue
+                local_target = os.path.join(local_dir, entry)
+                logging.info('Downloading %s/%s -> %s', remote_dir, entry, local_target)
+                with open(local_target, 'wb') as f:
+                    ftp_conn.retrbinary(f'RETR {entry}', f.write)
+        ftp_conn.cwd('..')
+
     logging.info('Connecting to FTP %s', REMOTE_FTP['host'])
     ftp = FTP()
     ftp.connect(REMOTE_FTP['host'])
@@ -80,11 +137,18 @@ def sync_files():
     if REMOTE_FTP['passive']:
         ftp.set_pasv(True)
     ftp.cwd(REMOTE_FILES_PATH)
-    names = ftp.nlst()
-    for name in names:
+    for name in ftp.nlst():
         if name in ('.', '..'):
             continue
+        if is_directory(ftp, name):
+            if RECURSIVE_FTP:
+                download_dir(ftp, name, os.path.join(LOCAL_FILES_PATH, name))
+            else:
+                logging.debug('Skipping directory: %s', name)
+            continue
         if not should_download(name):
+            continue
+        if not is_recent(ftp, name):
             continue
         local_target = os.path.join(LOCAL_FILES_PATH, name)
         logging.info('Downloading %s -> %s', name, local_target)

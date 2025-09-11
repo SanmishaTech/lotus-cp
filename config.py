@@ -41,4 +41,11 @@ REMOTE_FTP = {
 # Optional: limit download to certain extensions (comma-separated in env)
 FILTER_EXTENSIONS = [ext.strip() for ext in os.getenv('FILTER_EXTENSIONS', '').split(',') if ext.strip()]
 
+# Recursive FTP sync toggle
+RECURSIVE_FTP = os.getenv('FTP_RECURSIVE', 'false').lower() == 'true'
+
+# Recent file filtering
+RECENT_ONLY = os.getenv('FTP_RECENT_ONLY', 'false').lower() == 'true'
+RECENT_WINDOW_HOURS = int(os.getenv('FTP_RECENT_WINDOW_HOURS', '24'))
+
 # Add any other configuration as needed
