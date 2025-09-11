@@ -3,8 +3,28 @@ try:
     from dotenv import load_dotenv  # provided by python-dotenv
 except ImportError:  # graceful fallback if dependency not installed
     print("[WARN] python-dotenv not installed. Install with: pip install python-dotenv")
-    def load_dotenv(*args, **kwargs):
-        return None
+    def load_dotenv(path: str | None = None, **_: dict):
+        """Minimal .env loader fallback. Supports KEY=VALUE lines, ignores comments."""
+        env_path = path or os.path.join(os.path.dirname(__file__), '.env')
+        if not os.path.exists(env_path):
+            return False
+        try:
+            with open(env_path, 'r') as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' not in line:
+                        continue
+                    key, val = line.split('=', 1)
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    # Do not override existing env
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+            return True
+        except Exception:
+            return False
 
 load_dotenv()
 

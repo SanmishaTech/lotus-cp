@@ -25,6 +25,10 @@ logging.basicConfig(
 def run_mysqldump():
     """Run mysqldump directly against remote MySQL host (needs network access & privileges)."""
     dump_file = f"remote_db_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql"
+    required = ['host', 'user', 'password', 'database', 'port']
+    missing = [k for k in required if not REMOTE_DB.get(k)]
+    if missing:
+        raise RuntimeError(f"Missing REMOTE_DB config keys: {', '.join(missing)}. Check your .env and config.")
     cmd = [
         'mysqldump',
         f"-h{REMOTE_DB['host']}",
@@ -48,6 +52,10 @@ def run_mysqldump():
 
 # --- Restore to Local MySQL ---
 def restore_local_mysql(dump_file):
+    required = ['host', 'user', 'password', 'database', 'port']
+    missing = [k for k in required if not LOCAL_DB.get(k)]
+    if missing:
+        raise RuntimeError(f"Missing LOCAL_DB config keys: {', '.join(missing)}. Check your .env and config.")
     cmd = [
         'mysql',
         f"-h{LOCAL_DB['host']}",
