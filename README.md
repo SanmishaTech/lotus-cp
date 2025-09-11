@@ -24,13 +24,25 @@ This project automates the daily copying of a remote MySQL database (via direct 
 - To automate daily sync, add a cron job (see below).
 
 ## Cron Job Example
+Two options:
+
+1) Using the provided wrapper (recommended):
+   - Make it executable once:
+     - chmod +x ./scripts/run_sync.sh
+   - Edit your crontab and add (runs at 6pm daily):
 ```
-0 2 * * * /usr/bin/python3 /path/to/project/main.py
+0 18 * * * /bin/bash -lc '/home/administrator/lotus-cp/scripts/run_sync.sh'
+```
+
+2) Direct Python call (ensure venv + PATH are correct):
+```
+0 18 * * * cd /home/administrator/lotus-cp && . .venv/bin/activate && python main.py >> logs/sync_$(date +\%F).log 2>&1
 ```
 
 ## Notes
 - Ensure outbound access to the remote MySQL host and FTP host.
 - Ensure `mysqldump` and `mysql` client binaries are installed and in PATH.
+- When running under cron, the environment is minimal; use the wrapper script to set PATH, working directory, venv, and logging.
 - Use passive FTP if behind firewalls (default is passive=true).
 - For very large file sets or directory trees, extend the script for recursive FTP (current version handles a single directory flat list).
 
