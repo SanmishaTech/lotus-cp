@@ -1,7 +1,7 @@
 import os
 import subprocess
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from ftplib import FTP
 from config import (
     REMOTE_DB,
@@ -92,11 +92,13 @@ def sync_files():
             if not resp.startswith('213 '):
                 return None
             ts = resp.split()[1].strip()
-            return datetime.strptime(ts, '%Y%m%d%H%M%S')
+        # MDTM timestamps are in UTC; return a timezone-aware datetime
+        return datetime.strptime(ts, '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
         except Exception:
             return None
 
-    recent_cutoff = datetime.utcnow() if not RECENT_ONLY else datetime.utcnow()
+    # Use timezone-aware UTC now to avoid deprecation warnings
+    recent_cutoff = datetime.now(timezone.utc)
 
     def is_recent(ftp_conn: FTP, name: str) -> bool:
         if not RECENT_ONLY:
