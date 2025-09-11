@@ -94,8 +94,8 @@ def sync_files():
             if not resp.startswith('213 '):
                 return None
             ts = resp.split()[1].strip()
-        # MDTM timestamps are in UTC; return a timezone-aware datetime
-        return datetime.strptime(ts, '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+            # MDTM timestamps are in UTC; return a timezone-aware datetime
+            return datetime.strptime(ts, '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
         except Exception:
             return None
 
