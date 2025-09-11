@@ -48,4 +48,10 @@ RECURSIVE_FTP = os.getenv('FTP_RECURSIVE', 'false').lower() == 'true'
 RECENT_ONLY = os.getenv('FTP_RECENT_ONLY', 'false').lower() == 'true'
 RECENT_WINDOW_HOURS = int(os.getenv('FTP_RECENT_WINDOW_HOURS', '24'))
 
+# Performance tuning
+FTP_MAX_WORKERS = int(os.getenv('FTP_MAX_WORKERS', '4'))
+FTP_TIMEOUT = int(os.getenv('FTP_TIMEOUT', '60'))  # seconds
+FTP_USE_MLSD = os.getenv('FTP_USE_MLSD', 'true').lower() == 'true'
+FTP_SKIP_UNCHANGED = os.getenv('FTP_SKIP_UNCHANGED', 'true').lower() == 'true'
+
 # Add any other configuration as needed

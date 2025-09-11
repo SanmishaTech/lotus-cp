@@ -14,6 +14,7 @@ from config import (
     RECURSIVE_FTP,
     RECENT_ONLY,
     RECENT_WINDOW_HOURS,
+    FTP_SKIP_UNCHANGED,
 )
 
 logging.basicConfig(
@@ -142,29 +143,89 @@ def sync_files():
         sys.stdout.write(f"\rDownloading {label}: 100%\n")
         sys.stdout.flush()
 
+    def list_entries(ftp_conn: FTP):
+        """Return list of (name, is_dir, size, mdtm_dt) for current directory.
+        Uses MLSD when available, falling back to NLST + stat calls.
+        """
+        entries = []
+        try:
+            for name, facts in ftp_conn.mlsd():
+                if name in ('.', '..'):
+                    continue
+                typ = (facts.get('type') or '').lower()
+                is_dir = typ == 'dir'
+                size = None
+                mdtm_dt = None
+                if not is_dir:
+                    if 'size' in facts and str(facts['size']).isdigit():
+                        try:
+                            size = int(facts['size'])
+                        except Exception:
+                            size = None
+                    if 'modify' in facts:
+                        try:
+                            mdtm_dt = datetime.strptime(facts['modify'], '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+                        except Exception:
+                            mdtm_dt = None
+                entries.append((name, is_dir, size, mdtm_dt))
+            return entries
+        except Exception:
+            pass
+        # Fallback
+        for name in ftp_conn.nlst():
+            if name in ('.', '..'):
+                continue
+            is_dir = is_directory(ftp_conn, name)
+            if is_dir:
+                entries.append((name, True, None, None))
+            else:
+                entries.append((name, False, get_size(ftp_conn, name), get_mdtm_datetime(ftp_conn, name)))
+        return entries
+
     def download_dir(ftp_conn: FTP, remote_dir: str, local_dir: str):
         ftp_conn.cwd(remote_dir)
         os.makedirs(local_dir, exist_ok=True)
-        for entry in ftp_conn.nlst():
-            if entry in ('.', '..'):
-                continue
-            if is_directory(ftp_conn, entry):
+        for entry, is_dir, size, mdtm_dt in list_entries(ftp_conn):
+            if is_dir:
                 if RECURSIVE_FTP:
                     download_dir(ftp_conn, entry, os.path.join(local_dir, entry))
                 else:
                     logging.debug('Skipping directory (recursion disabled): %s/%s', remote_dir, entry)
             else:
-                if not should_download(entry):
+                name = entry
+                if not should_download(name):
                     continue
-                if not is_recent(ftp_conn, entry):
+                # Use known mdtm if available to avoid extra command
+                if RECENT_ONLY and mdtm_dt is not None:
+                    delta_hours = (recent_cutoff - mdtm_dt).total_seconds() / 3600.0
+                    if delta_hours > RECENT_WINDOW_HOURS:
+                        continue
+                elif not is_recent(ftp_conn, name):
                     continue
-                local_target = os.path.join(local_dir, entry)
-                label = f"{remote_dir}/{entry}"
-                size = get_size(ftp_conn, entry)
+                local_target = os.path.join(local_dir, name)
+                label = f"{remote_dir}/{name}"
+                if FTP_SKIP_UNCHANGED and os.path.exists(local_target) and size is not None:
+                    try:
+                        if os.path.getsize(local_target) == int(size):
+                            logging.debug('Skipping unchanged (size match): %s', label)
+                            continue
+                    except Exception:
+                        pass
+                if size is None:
+                    size = get_size(ftp_conn, name)
                 logging.info('Downloading %s -> %s (%s bytes)', label, local_target, size if size is not None else 'unknown')
                 with open(local_target, 'wb') as f:
                     cb, *_ = make_progress_writer(f, size, label)
-                    ftp_conn.retrbinary(f'RETR {entry}', cb)
+                    ftp_conn.retrbinary(f'RETR {name}', cb)
+                # Preserve remote modified time when known
+                try:
+                    if mdtm_dt is None:
+                        mdtm_dt = get_mdtm_datetime(ftp_conn, name)
+                    if mdtm_dt is not None:
+                        ts = int(mdtm_dt.timestamp())
+                        os.utime(local_target, (ts, ts))
+                except Exception:
+                    pass
                 finish_progress(label)
         ftp_conn.cwd('..')
 
@@ -175,10 +236,9 @@ def sync_files():
     if REMOTE_FTP['passive']:
         ftp.set_pasv(True)
     ftp.cwd(REMOTE_FILES_PATH)
-    for name in ftp.nlst():
-        if name in ('.', '..'):
-            continue
-        if is_directory(ftp, name):
+    for entry, is_dir, size, mdtm_dt in list_entries(ftp):
+        name = entry
+        if is_dir:
             if RECURSIVE_FTP:
                 download_dir(ftp, name, os.path.join(LOCAL_FILES_PATH, name))
             else:
@@ -186,14 +246,35 @@ def sync_files():
             continue
         if not should_download(name):
             continue
-        if not is_recent(ftp, name):
+        if RECENT_ONLY and mdtm_dt is not None:
+            delta_hours = (recent_cutoff - mdtm_dt).total_seconds() / 3600.0
+            if delta_hours > RECENT_WINDOW_HOURS:
+                continue
+        elif not is_recent(ftp, name):
             continue
         local_target = os.path.join(LOCAL_FILES_PATH, name)
-        size = get_size(ftp, name)
+        if FTP_SKIP_UNCHANGED and os.path.exists(local_target) and size is not None:
+            try:
+                if os.path.getsize(local_target) == int(size):
+                    logging.debug('Skipping unchanged (size match): %s', name)
+                    continue
+            except Exception:
+                pass
+        if size is None:
+            size = get_size(ftp, name)
         logging.info('Downloading %s -> %s (%s bytes)', name, local_target, size if size is not None else 'unknown')
         with open(local_target, 'wb') as f:
             cb, *_ = make_progress_writer(f, size, name)
             ftp.retrbinary(f'RETR {name}', cb)
+        # Preserve modified time
+        try:
+            if mdtm_dt is None:
+                mdtm_dt = get_mdtm_datetime(ftp, name)
+            if mdtm_dt is not None:
+                ts = int(mdtm_dt.timestamp())
+                os.utime(local_target, (ts, ts))
+        except Exception:
+            pass
         finish_progress(name)
     ftp.quit()
     logging.info('FTP file sync complete')
