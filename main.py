@@ -4,6 +4,8 @@ import logging
 import sys
 from datetime import datetime, timezone
 from ftplib import FTP
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Optional
 from config import (
     REMOTE_DB,
     LOCAL_DB,
@@ -15,6 +17,8 @@ from config import (
     RECENT_ONLY,
     RECENT_WINDOW_HOURS,
     FTP_SKIP_UNCHANGED,
+    FTP_TIMEOUT,
+    FTP_USE_MLSD,
 )
 
 logging.basicConfig(
@@ -165,29 +169,31 @@ def sync_files():
         Uses MLSD when available, falling back to NLST + stat calls.
         """
         entries = []
-        try:
-            for name, facts in ftp_conn.mlsd():
-                if name in ('.', '..'):
-                    continue
-                typ = (facts.get('type') or '').lower()
-                is_dir = typ == 'dir'
-                size = None
-                mdtm_dt = None
-                if not is_dir:
-                    if 'size' in facts and str(facts['size']).isdigit():
-                        try:
-                            size = int(facts['size'])
-                        except Exception:
-                            size = None
-                    if 'modify' in facts:
-                        try:
-                            mdtm_dt = datetime.strptime(facts['modify'], '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
-                        except Exception:
-                            mdtm_dt = None
-                entries.append((name, is_dir, size, mdtm_dt))
-            return entries
-        except Exception:
-            pass
+        if FTP_USE_MLSD:
+            try:
+                for name, facts in ftp_conn.mlsd():
+                    if name in ('.', '..'):
+                        continue
+                    typ = (facts.get('type') or '').lower()
+                    is_dir = typ == 'dir'
+                    size = None
+                    mdtm_dt = None
+                    if not is_dir:
+                        if 'size' in facts and str(facts['size']).isdigit():
+                            try:
+                                size = int(facts['size'])
+                            except Exception:
+                                size = None
+                        if 'modify' in facts:
+                            try:
+                                mdtm_dt = datetime.strptime(facts['modify'], '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+                            except Exception:
+                                mdtm_dt = None
+                    entries.append((name, is_dir, size, mdtm_dt))
+                return entries
+            except Exception:
+                # fall back below
+                entries = []
         # Fallback
         for name in ftp_conn.nlst():
             if name in ('.', '..'):
@@ -256,57 +262,178 @@ def sync_files():
 
     logging.info('Connecting to FTP %s', REMOTE_FTP['host'])
     ftp = FTP()
-    ftp.connect(REMOTE_FTP['host'])
+    ftp.connect(REMOTE_FTP['host'], timeout=FTP_TIMEOUT)
     ftp.login(REMOTE_FTP['user'], REMOTE_FTP['password'])
     if REMOTE_FTP['passive']:
         ftp.set_pasv(True)
     ftp.cwd(REMOTE_FILES_PATH)
-    for entry, is_dir, size, mdtm_dt in list_entries(ftp):
-        name = entry
-        if is_dir:
-            if RECURSIVE_FTP:
-                download_dir(ftp, name, os.path.join(LOCAL_FILES_PATH, name))
-            else:
-                logging.debug('Skipping directory: %s', name)
-            continue
-        if not should_download(name):
-            continue
-        if RECENT_ONLY and mdtm_dt is not None:
-            delta_hours = (recent_cutoff - mdtm_dt).total_seconds() / 3600.0
-            if delta_hours > RECENT_WINDOW_HOURS:
+
+    # Build task list (single connection for listing)
+    tasks: List[Dict] = []
+
+    def collect_tasks_in_dir(cur_remote: str, rel_dir: str = ""):
+        for entry, is_dir, size, mdtm_dt in list_entries(ftp):
+            name = entry
+            if is_dir:
+                if RECURSIVE_FTP:
+                    ftp.cwd(name)
+                    collect_tasks_in_dir(ftp.pwd(), os.path.join(rel_dir, name) if rel_dir else name)
+                    ftp.cwd('..')
                 continue
-        elif not is_recent(ftp, name):
-            continue
-        local_target = os.path.join(LOCAL_FILES_PATH, name)
-        if FTP_SKIP_UNCHANGED and os.path.exists(local_target) and size is not None:
-            try:
-                if os.path.getsize(local_target) == int(size):
-                    logging.debug('Skipping unchanged (size match): %s', name)
+            # File filtering
+            if not should_download(name):
+                continue
+            if RECENT_ONLY and mdtm_dt is not None:
+                delta_hours = (recent_cutoff - mdtm_dt).total_seconds() / 3600.0
+                if delta_hours > RECENT_WINDOW_HOURS:
                     continue
-            except Exception:
-                pass
-        if size is None:
-            size = get_size(ftp, name)
-        logging.info('Downloading %s -> %s (%s bytes)', name, local_target, size if size is not None else 'unknown')
-        try:
-            with open(local_target, 'wb') as f:
-                cb, *_ = make_progress_writer(f, size, name)
-                ftp.retrbinary(f'RETR {name}', cb)
-        except PermissionError:
-            logging.error('Permission denied writing file: %s (skipping)', local_target)
-            continue
-        # Preserve modified time
-        try:
-            if mdtm_dt is None:
-                mdtm_dt = get_mdtm_datetime(ftp, name)
-            if mdtm_dt is not None:
-                ts = int(mdtm_dt.timestamp())
-                os.utime(local_target, (ts, ts))
-        except Exception:
-            pass
-        finish_progress(name)
-    ftp.quit()
-    logging.info('FTP file sync complete')
+            elif not is_recent(ftp, name):
+                continue
+            rel_path = os.path.join(rel_dir, name) if rel_dir else name
+            local_target = os.path.join(LOCAL_FILES_PATH, rel_path)
+            # Skip unchanged by size when known
+            if FTP_SKIP_UNCHANGED and size is not None and os.path.exists(local_target):
+                try:
+                    if os.path.getsize(local_target) == int(size):
+                        logging.debug('Skipping unchanged (size match): %s', rel_path)
+                        continue
+                except Exception:
+                    pass
+            tasks.append({
+                'rel_path': rel_path,
+                'name': name,
+                'size': size,
+                'mdtm': mdtm_dt,
+            })
+
+    collect_tasks_in_dir(ftp.pwd(), "")
+    try:
+        ftp.quit()
+    except Exception:
+        pass
+
+    if not tasks:
+        logging.info('No files to download.')
+        return
+
+    def connect_fresh() -> FTP:
+        c = FTP()
+        c.connect(REMOTE_FTP['host'], timeout=FTP_TIMEOUT)
+        c.login(REMOTE_FTP['user'], REMOTE_FTP['password'])
+        if REMOTE_FTP['passive']:
+            c.set_pasv(True)
+        return c
+
+    def ensure_cwd(conn: FTP, rel_dir: str):
+        conn.cwd(REMOTE_FILES_PATH)
+        if rel_dir:
+            for part in rel_dir.strip('/').split('/'):
+                if part:
+                    conn.cwd(part)
+
+    downloaded = skipped = failed = 0
+
+    if FTP_MAX_WORKERS <= 1:
+        # Sequential with progress
+        for t in tasks:
+            rel_dir = os.path.dirname(t['rel_path'])
+            local_target = os.path.join(LOCAL_FILES_PATH, t['rel_path'])
+            try:
+                os.makedirs(os.path.dirname(local_target), exist_ok=True)
+            except PermissionError:
+                logging.error('Permission denied creating directory: %s (skipping)', os.path.dirname(local_target))
+                failed += 1
+                continue
+            try:
+                conn = connect_fresh()
+                ensure_cwd(conn, rel_dir)
+                size = t['size']
+                if size is None:
+                    try:
+                        size = conn.size(t['name'])
+                    except Exception:
+                        size = None
+                label = t['rel_path']
+                logging.info('Downloading %s -> %s (%s bytes)', label, local_target, size if size is not None else 'unknown')
+                with open(local_target, 'wb') as f:
+                    cb, *_ = make_progress_writer(f, size, label)
+                    conn.retrbinary(f"RETR {t['name']}", cb)
+                # Preserve mtime
+                mdtm_dt = t['mdtm']
+                if mdtm_dt is None:
+                    try:
+                        resp = conn.sendcmd(f"MDTM {t['name']}")
+                        if resp.startswith('213 '):
+                            ts = resp.split()[1].strip()
+                            mdtm_dt = datetime.strptime(ts, '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+                    except Exception:
+                        mdtm_dt = None
+                if mdtm_dt is not None:
+                    try:
+                        ts = int(mdtm_dt.timestamp())
+                        os.utime(local_target, (ts, ts))
+                    except Exception:
+                        pass
+                finish_progress(label)
+                downloaded += 1
+            except PermissionError:
+                logging.error('Permission denied writing file: %s (skipping)', local_target)
+                failed += 1
+            except Exception as e:
+                logging.error('Failed to download %s: %s', t['rel_path'], e)
+                failed += 1
+            finally:
+                try:
+                    conn.quit()
+                except Exception:
+                    pass
+    else:
+        # Parallel without per-chunk progress (to keep logs readable)
+        def worker(t: Dict):
+            rel_dir = os.path.dirname(t['rel_path'])
+            local_target = os.path.join(LOCAL_FILES_PATH, t['rel_path'])
+            os.makedirs(os.path.dirname(local_target), exist_ok=True)
+            conn = connect_fresh()
+            try:
+                ensure_cwd(conn, rel_dir)
+                with open(local_target, 'wb') as f:
+                    conn.retrbinary(f"RETR {t['name']}", f.write)
+                # Preserve mtime
+                mdtm_dt = t['mdtm']
+                if mdtm_dt is None:
+                    try:
+                        resp = conn.sendcmd(f"MDTM {t['name']}")
+                        if resp.startswith('213 '):
+                            ts = resp.split()[1].strip()
+                            mdtm_dt = datetime.strptime(ts, '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+                    except Exception:
+                        mdtm_dt = None
+                if mdtm_dt is not None:
+                    try:
+                        ts = int(mdtm_dt.timestamp())
+                        os.utime(local_target, (ts, ts))
+                    except Exception:
+                        pass
+                return True
+            finally:
+                try:
+                    conn.quit()
+                except Exception:
+                    pass
+
+        with ThreadPoolExecutor(max_workers=FTP_MAX_WORKERS) as ex:
+            futures = {ex.submit(worker, t): t for t in tasks}
+            for fut in as_completed(futures):
+                t = futures[fut]
+                try:
+                    ok = fut.result()
+                    if ok:
+                        downloaded += 1
+                except Exception as e:
+                    failed += 1
+                    logging.error('Failed to download %s: %s', t['rel_path'], e)
+
+    logging.info('FTP sync finished: downloaded=%d, failed=%d, total=%d', downloaded, failed, len(tasks))
 
 def main():
     dump_file = run_mysqldump()
