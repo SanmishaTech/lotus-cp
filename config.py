@@ -1,5 +1,10 @@
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv  # provided by python-dotenv
+except ImportError:  # graceful fallback if dependency not installed
+    print("[WARN] python-dotenv not installed. Install with: pip install python-dotenv")
+    def load_dotenv(*args, **kwargs):
+        return None
 
 load_dotenv()
 
