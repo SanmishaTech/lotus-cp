@@ -1,6 +1,7 @@
 import os
 import subprocess
 import logging
+import sys
 from datetime import datetime, timezone
 from ftplib import FTP
 from config import (
@@ -110,6 +111,37 @@ def sync_files():
         delta_hours = (recent_cutoff - mdtm).total_seconds() / 3600.0
         return delta_hours <= RECENT_WINDOW_HOURS
 
+    def get_size(ftp_conn: FTP, name: str):
+        try:
+            return ftp_conn.size(name)
+        except Exception:
+            return None
+
+    def make_progress_writer(file_handle, total_size, label):
+        bytes_written = {'n': 0}
+        last_pct = {'p': -1}
+
+        def cb(data: bytes):
+            file_handle.write(data)
+            bytes_written['n'] += len(data)
+            if total_size and total_size > 0:
+                pct = int(bytes_written['n'] * 100 / total_size)
+                if pct != last_pct['p']:
+                    last_pct['p'] = pct
+                    sys.stdout.write(f"\rDownloading {label}: {pct}% ({bytes_written['n']}/{total_size} bytes)")
+                    sys.stdout.flush()
+            else:
+                # Unknown total size; print in MB every ~1MB
+                if bytes_written['n'] % (1024 * 1024) < len(data):
+                    mb = bytes_written['n'] / (1024 * 1024)
+                    sys.stdout.write(f"\rDownloading {label}: {mb:.1f} MiB")
+                    sys.stdout.flush()
+        return cb, bytes_written, last_pct
+
+    def finish_progress(label):
+        sys.stdout.write(f"\rDownloading {label}: 100%\n")
+        sys.stdout.flush()
+
     def download_dir(ftp_conn: FTP, remote_dir: str, local_dir: str):
         ftp_conn.cwd(remote_dir)
         os.makedirs(local_dir, exist_ok=True)
@@ -127,9 +159,13 @@ def sync_files():
                 if not is_recent(ftp_conn, entry):
                     continue
                 local_target = os.path.join(local_dir, entry)
-                logging.info('Downloading %s/%s -> %s', remote_dir, entry, local_target)
+                label = f"{remote_dir}/{entry}"
+                size = get_size(ftp_conn, entry)
+                logging.info('Downloading %s -> %s (%s bytes)', label, local_target, size if size is not None else 'unknown')
                 with open(local_target, 'wb') as f:
-                    ftp_conn.retrbinary(f'RETR {entry}', f.write)
+                    cb, *_ = make_progress_writer(f, size, label)
+                    ftp_conn.retrbinary(f'RETR {entry}', cb)
+                finish_progress(label)
         ftp_conn.cwd('..')
 
     logging.info('Connecting to FTP %s', REMOTE_FTP['host'])
@@ -153,9 +189,12 @@ def sync_files():
         if not is_recent(ftp, name):
             continue
         local_target = os.path.join(LOCAL_FILES_PATH, name)
-        logging.info('Downloading %s -> %s', name, local_target)
+        size = get_size(ftp, name)
+        logging.info('Downloading %s -> %s (%s bytes)', name, local_target, size if size is not None else 'unknown')
         with open(local_target, 'wb') as f:
-            ftp.retrbinary(f'RETR {name}', f.write)
+            cb, *_ = make_progress_writer(f, size, name)
+            ftp.retrbinary(f'RETR {name}', cb)
+        finish_progress(name)
     ftp.quit()
     logging.info('FTP file sync complete')
 
