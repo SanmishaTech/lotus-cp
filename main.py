@@ -79,7 +79,16 @@ def sync_files():
         logging.warning('REMOTE_FTP_HOST not set; skipping file sync')
         return
     if not os.path.exists(LOCAL_FILES_PATH):
-        os.makedirs(LOCAL_FILES_PATH, exist_ok=True)
+        try:
+            os.makedirs(LOCAL_FILES_PATH, exist_ok=True)
+        except PermissionError:
+            logging.error('No write permission to create LOCAL_FILES_PATH: %s', LOCAL_FILES_PATH)
+            logging.error('Change LOCAL_FILES_PATH in .env to a path you own (e.g. ~/lotus-cp/synced_files) or fix permissions.')
+            return
+    if not os.access(LOCAL_FILES_PATH, os.W_OK):
+        logging.error('LOCAL_FILES_PATH is not writable: %s', LOCAL_FILES_PATH)
+        logging.error('Change LOCAL_FILES_PATH in .env or adjust directory permissions (chown/chmod).')
+        return
 
     def should_download(name: str) -> bool:
         if not FILTER_EXTENSIONS:
@@ -192,7 +201,11 @@ def sync_files():
 
     def download_dir(ftp_conn: FTP, remote_dir: str, local_dir: str):
         ftp_conn.cwd(remote_dir)
-        os.makedirs(local_dir, exist_ok=True)
+        try:
+            os.makedirs(local_dir, exist_ok=True)
+        except PermissionError:
+            logging.error('Permission denied creating directory: %s (skipping %s)', local_dir, remote_dir)
+            return
         for entry, is_dir, size, mdtm_dt in list_entries(ftp_conn):
             if is_dir:
                 if RECURSIVE_FTP:
@@ -222,9 +235,13 @@ def sync_files():
                 if size is None:
                     size = get_size(ftp_conn, name)
                 logging.info('Downloading %s -> %s (%s bytes)', label, local_target, size if size is not None else 'unknown')
-                with open(local_target, 'wb') as f:
-                    cb, *_ = make_progress_writer(f, size, label)
-                    ftp_conn.retrbinary(f'RETR {name}', cb)
+                try:
+                    with open(local_target, 'wb') as f:
+                        cb, *_ = make_progress_writer(f, size, label)
+                        ftp_conn.retrbinary(f'RETR {name}', cb)
+                except PermissionError:
+                    logging.error('Permission denied writing file: %s (skipping)', local_target)
+                    continue
                 # Preserve remote modified time when known
                 try:
                     if mdtm_dt is None:
@@ -271,9 +288,13 @@ def sync_files():
         if size is None:
             size = get_size(ftp, name)
         logging.info('Downloading %s -> %s (%s bytes)', name, local_target, size if size is not None else 'unknown')
-        with open(local_target, 'wb') as f:
-            cb, *_ = make_progress_writer(f, size, name)
-            ftp.retrbinary(f'RETR {name}', cb)
+        try:
+            with open(local_target, 'wb') as f:
+                cb, *_ = make_progress_writer(f, size, name)
+                ftp.retrbinary(f'RETR {name}', cb)
+        except PermissionError:
+            logging.error('Permission denied writing file: %s (skipping)', local_target)
+            continue
         # Preserve modified time
         try:
             if mdtm_dt is None:
